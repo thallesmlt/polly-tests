@@ -1,11 +1,6 @@
 ﻿using Polly;
 using Polly.CircuitBreaker;
 using Polly.Wrap;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace PollyTest
 {
@@ -15,13 +10,14 @@ namespace PollyTest
         {
             var apiTwoPolicy = Policy
                 .Handle<HttpRequestException>()
-                .WaitAndRetry(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(1, retryAttempt)), onRetry: (exception, retryAttempt, retryCount, r) =>
+                .WaitAndRetry(5, retryAttempt => TimeSpan.FromSeconds(Math.Pow(1, retryAttempt)), onRetry: (exception, retryAttempt, retryCount, r) =>
                 {
                     Console.WriteLine($"Retrying API Two {retryCount} time(s)");
                 });
 
             var apiOnefallBackPolicy = Policy
                 .Handle<HttpRequestException>()
+                .Or<BrokenCircuitException>()
                 .Fallback(() =>
                 {
                     Console.WriteLine($"Fallback for API One");
@@ -38,7 +34,7 @@ namespace PollyTest
                     .Handle<HttpRequestException>()
                 .AdvancedCircuitBreaker(
                 failureThreshold: 1,
-                samplingDuration: TimeSpan.FromSeconds(100),
+                samplingDuration: TimeSpan.FromSeconds(90),
                 minimumThroughput: 6,
                 durationOfBreak: TimeSpan.FromSeconds(90),
                 onBreak: (ex, timespan) =>
@@ -54,31 +50,21 @@ namespace PollyTest
             // Simulating calls to API One
             for (int i = 0; i < 50; i++)
             {
-                try
+                var circuitState = apiOneCombinedPolicy.GetPolicy<CircuitBreakerPolicy>().CircuitState;
+                if (circuitState != CircuitState.Open && circuitState != CircuitState.Isolated)
                 {
-                    var circuitState = apiOneCombinedPolicy.GetPolicy<CircuitBreakerPolicy>().CircuitState;
-                    if (circuitState != CircuitState.Open && circuitState != CircuitState.Isolated)
+                    apiOneCombinedPolicy.Execute(() =>
                     {
-                        apiOneCombinedPolicy.Execute(() =>
-                        {
-                            CallApiOne(circuitState);
-                        });
-                    }
-                    else
-                    {
-                        apiTwoPolicy.Execute(() =>
-                        {
-                            CallApiTwo();
-                        });
-                    }  
+                        CallApiOne(circuitState);
+                    });
                 }
-                catch (BrokenCircuitException)
+                else
                 {
                     apiTwoPolicy.Execute(() =>
                     {
                         CallApiTwo();
                     });
-                }
+                }  
             }
         }
 
@@ -87,7 +73,11 @@ namespace PollyTest
             // Simulating API One call
             Console.WriteLine($"API One Called{Environment.NewLine}");
 
-            if (state == CircuitState.HalfOpen) { return;  }
+            //Force CircuitBreaker returns to Closed State when circuit isHhalfOpen
+            //Comment the if statement to keep the CircuitBreaker in the OpenState
+            if (state == CircuitState.HalfOpen)
+                return;
+
             throw new HttpRequestException("Simulating API One failure.");
         }
 
@@ -96,17 +86,12 @@ namespace PollyTest
             // Simulating API Two call
             Console.WriteLine($"API Two Called{Environment.NewLine}");
 
-            bool success = true;
+            //50% of throw or not and exception. The ideia is to test the retry policy of CallApiTwo()
             Random rand = new Random();
-
             if (rand.Next(0, 2) != 0)
-            {
-                //success = false;
-            }
+                return;
 
-            if(success ) { return; }
             throw new HttpRequestException("Simulating API Two failure.");
         }
-
     }
 }
